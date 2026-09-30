@@ -1,0 +1,275 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AI FIRE DETECTOR</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0d1117;color:#e6edf3;font-family:Arial,sans-serif}
+.top{padding:15px 20px;background:#161b22;border-bottom:1px solid #30363d}
+.top h2{margin:0 0 5px}
+.grid{display:grid;grid-template-columns:330px 1fr 360px;height:calc(100vh - 74px)}
+.panel{padding:12px;overflow:auto;background:#161b22}
+.map{min-width:0}
+#map{height:100%}
+.card{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:10px}
+.metric{display:flex;justify-content:space-between;border-bottom:1px solid #30363d;padding:7px 0;font-size:13px}
+.event{padding:9px;border:1px solid #30363d;border-radius:6px;margin:6px 0;cursor:pointer}
+.event:hover{border-color:#58a6ff}
+button,select{width:100%;padding:9px;margin:4px 0;border:0;border-radius:6px;background:#238636;color:white;cursor:pointer}
+button.blue{background:#1f6feb}
+button.red{background:#da3633}
+.status{font-size:12px;line-height:1.4;margin-top:8px}
+.tag{font-size:11px;padding:3px 6px;border-radius:4px}
+.HIGH,.CRITICAL{background:#da3633}
+.MEDIUM{background:#9e6a03}
+.LOW{background:#238636}
+.source{font-size:10px;padding:3px 5px;border-radius:4px;background:#30363d}
+.why{background:#0d1117;padding:6px;margin:4px 0;border-radius:5px;font-size:12px}
+small{color:#8b949e}
+</style>
+</head>
+<body>
+
+<div class="top">
+<h2>AI FIRE DETECTOR</h2>
+</div>
+
+<div class="grid">
+
+<div class="panel">
+
+<div class="card">
+<b>Real NASA FIRMS</b>
+<button class="blue" onclick="fetchFirms()"> Fetch NASA FIRMS</button>
+<label><small>Satellite</small></label>
+<select id="firmsSource">
+<option value="VIIRS_NOAA20_NRT">VIIRS NOAA-20 NRT</option>
+<option value="VIIRS_SNPP_NRT">VIIRS Suomi-NPP NRT</option>
+<option value="VIIRS_NOAA21_NRT">VIIRS NOAA-21 NRT</option>
+</select>
+<label><small>Days</small></label>
+<select id="firmsDays">
+<option value="1">1 day</option>
+<option value="2">2 days</option>
+<option value="5">5 days</option>
+</select>
+<div class="status" id="firmsStatus">Ready.</div>
+</div>
+
+<div class="card">
+<b>Simulation</b>
+<select id="scenario">
+<option value="mixed">Mixed — all scenarios</option>
+<option value="industrial">Industrial fire</option>
+<option value="wildfire">Wildfire</option>
+<option value="crop_burn">Crop burn</option>
+</select>
+<button onclick="simulate()">▶ Run simulation</button>
+<button class="red" onclick="resetDb()">Reset events</button>
+<div class="status" id="simStatus">Ready.</div>
+</div>
+
+<div class="card">
+<b>Metrics</b>
+<div class="metric"><span>Total Events</span><b id="n">0</b></div>
+<div class="metric"><span>NASA FIRMS</span><b id="nasa">0</b></div>
+<div class="metric"><span>Simulation</span><b id="simn">0</b></div>
+<div class="metric"><span>High/Critical</span><b id="h">0</b></div>
+<div class="metric"><span>Industrial</span><b id="i">0</b></div>
+<div class="metric"><span>Avg Severity</span><b id="a">0</b></div>
+</div>
+
+<div class="card">
+<b>Event stream</b>
+<div id="list"></div>
+</div>
+
+</div>
+
+<div class="map"><div id="map"></div></div>
+
+<div class="panel">
+<div class="card">
+<b>Event intelligence</b>
+<div id="detail">Select an event.</div>
+</div>
+</div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map=L.map('map').setView([13,80],7);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:19,
+    attribution:'© OpenStreetMap'
+}).addTo(map);
+
+let markers=[];
+
+function clearMarkers(){
+    markers.forEach(m=>map.removeLayer(m));
+    markers=[];
+}
+
+async function load(){
+    try{
+        const d=await (await fetch('/events?limit=1000')).json();
+        clearMarkers();
+
+        let hi=0,ind=0,nasa=0,sim=0;
+        document.getElementById('list').innerHTML='';
+
+        d.forEach(e=>{
+            if(['HIGH','CRITICAL'].includes(e.urgency)) hi++;
+            if(e.source_class==='industrial_fire') ind++;
+            if(e.data_source==='NASA_FIRMS') nasa++;
+            if(e.data_source==='SIMULATION') sim++;
+
+            const m=L.circleMarker(
+                [e.latitude,e.longitude],
+                {radius:Math.max(7,7+e.severity/10),weight:2,fillOpacity:.8}
+            ).addTo(map);
+
+            m.bindPopup(
+                `<b>${e.event_id}</b><br>`+
+                `Source: ${e.data_source}<br>`+
+                `Class: ${e.source_class}<br>`+
+                `Severity: ${e.severity}<br>`+
+                `FRP: ${Number(e.max_frp).toFixed(1)} MW`
+            );
+
+            m.on('click',()=>show(e.event_id));
+            markers.push(m);
+
+            const x=document.createElement('div');
+            x.className='event';
+            x.innerHTML=
+                `<b>${e.event_id}</b> `+
+                `<span class="tag ${e.urgency}">${e.urgency}</span><br>`+
+                `<span class="source">${e.data_source}</span><br>`+
+                `<small>${e.source_class} · ${e.detection_count} detections · severity ${e.severity}</small>`;
+            x.onclick=()=>show(e.event_id);
+            document.getElementById('list').appendChild(x);
+        });
+
+        document.getElementById('n').textContent=d.length;
+        document.getElementById('nasa').textContent=nasa;
+        document.getElementById('simn').textContent=sim;
+        document.getElementById('h').textContent=hi;
+        document.getElementById('i').textContent=ind;
+        document.getElementById('a').textContent=d.length
+            ? Math.round(d.reduce((s,x)=>s+Number(x.severity),0)/d.length)
+            : 0;
+    }catch(err){
+        console.error(err);
+    }
+}
+
+async function simulate(){
+    const status=document.getElementById('simStatus');
+    status.textContent='Generating simulation events...';
+
+    const scenario=document.getElementById('scenario').value;
+
+    const response=await fetch('/simulate',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+            scenario:scenario,
+            events:8,
+            detections_per_event:8
+        })
+    });
+
+    const x=await response.json();
+
+    if(!response.ok){
+        status.textContent='Simulation failed: '+(x.detail||'unknown error');
+        return;
+    }
+
+    status.textContent='Created '+x.created+' simulated events.';
+    await load();
+}
+
+async function fetchFirms(){
+    const status=document.getElementById('firmsStatus');
+    status.textContent='Connecting to NASA FIRMS...';
+
+    const source=document.getElementById('firmsSource').value;
+    const days=Number(document.getElementById('firmsDays').value);
+
+    const response=await fetch('/firms/fetch',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+            source:source,
+            days:days,
+            area:'68,6,97,36'
+        })
+    });
+
+    const x=await response.json();
+
+    if(!response.ok){
+        status.textContent='FIRMS failed: '+(x.detail||'unknown error');
+        return;
+    }
+
+    status.textContent=
+        'NASA FIRMS: '+x.detections+
+        ' detections → '+x.created_events+' events.';
+
+    await load();
+}
+
+async function show(id){
+    const e=await (await fetch('/events/'+id)).json();
+
+    document.getElementById('detail').innerHTML=
+        `<div class="metric"><span>Data source</span><b>${e.data_source}</b></div>`+
+        `<div class="metric"><span>Source class</span><b>${e.source_class}</b></div>`+
+        `<div class="metric"><span>Probability</span><b>${(e.source_probability*100).toFixed(1)}%</b></div>`+
+        `<div class="metric"><span>Severity</span><b>${e.severity}</b></div>`+
+        `<div class="metric"><span>Urgency</span><b>${e.urgency}</b></div>`+
+        `<div class="metric"><span>Peak FRP</span><b>${Number(e.max_frp).toFixed(1)} MW</b></div>`+
+        `<div class="metric"><span>Detections</span><b>${e.detection_count}</b></div>`+
+        `<div class="metric"><span>Industrial distance</span><b>${Number(e.industrial_distance_km).toFixed(2)} km</b></div>`+
+        `<div class="metric"><span>Land cover</span><b>${e.landcover}</b></div>`+
+        `<h4>Why?</h4>`+
+        e.explanation.split('; ').map(x=>`<div class="why">✓ ${x}</div>`).join('')+
+        `<h4>Human verification</h4>`+
+        `<button onclick="verify('${id}','confirmed')">Confirm</button>`+
+        `<button onclick="verify('${id}','uncertain')">Uncertain</button>`+
+        `<button class="red" onclick="verify('${id}','rejected')">Reject</button>`;
+}
+
+async function verify(id,label){
+    await fetch('/events/'+id+'/verify',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+            label:label,
+            comment:'Dashboard verification'
+        })
+    });
+    await show(id);
+    await load();
+}
+
+async function resetDb(){
+    await fetch('/simulation/reset',{method:'POST'});
+    document.getElementById('simStatus').textContent='All events cleared.';
+    document.getElementById('firmsStatus').textContent='Ready.';
+    await load();
+}
+
+load();
+setInterval(load,5000);
+</script>
+</body>
+</html>
